@@ -1,0 +1,22 @@
+# Wellfound adapter Lambda: container image (not zip/layers) because Playwright's
+# Chromium binary is too large for a zip deployment/layer. Reused across a batch of
+# page loads per invocation - see adapters/_browser.py and wellfound.py's module
+# docstring for why (DataDome-gated job pages, authenticated storage_state required).
+#
+# Build/deploy is the infra workstream's call (CDK repository/image asset wiring),
+# this Dockerfile just captures the packaging this adapter needs:
+#   docker build -f src/adapters/Dockerfile.wellfound -t wellfound-adapter .
+#
+# Memory: 1536-2048 MB. Timeout: 90-120s. Both set at the Lambda function level in
+# infra/, not here.
+
+FROM public.ecr.aws/lambda/python:3.12
+
+RUN pip install --no-cache-dir playwright~=1.45 httpx~=0.27 \
+    && python -m playwright install --with-deps chromium \
+    && python -m playwright install-deps chromium
+
+COPY src/adapters ${LAMBDA_TASK_ROOT}/adapters
+COPY src/shared ${LAMBDA_TASK_ROOT}/shared
+
+CMD ["adapters.wellfound.lambda_handler"]
