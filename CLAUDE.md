@@ -4,6 +4,43 @@ Autonomous, human-supervised job application agent. Full architecture plan lives
 `docs/ARCHITECTURE.md` - this file is the quick-reference for whichever workstream
 you're working in.
 
+## Your task in this worktree (feat/adapters)
+
+You own `src/adapters/` only. Implement `JobSourceAdapter` (from
+`src/shared/contracts.py` - read-only, do not edit) for each source, returning
+lists of `JobPosting`:
+
+1. **`amazon.py`** - Amazon.jobs. First, investigate whether the public
+   `amazon.jobs` search frontend calls an internal JSON endpoint (check the
+   Network tab while searching manually). If so, build a lightweight `httpx`
+   adapter hitting that endpoint directly - no headless browser. Only fall
+   back to Playwright if that endpoint turns out to be unavailable/blocked.
+2. **`google.py`** - Google Careers. Same investigation first
+   (`careers.google.com`). No confirmed public JSON API is known going in, so
+   default assumption is Playwright is required - confirm or refute that with
+   a quick spike before writing much code.
+3. **`wellfound.py`** - Wellfound (AngelList Talent), a heavy client-rendered
+   SPA - build with Playwright. Deploy as a Lambda container image (not
+   zip/layers): base on `public.ecr.aws/lambda/python`, install Playwright +
+   Chromium, 1.5-2GB memory, 90-120s timeout. Block image/CSS/font resource
+   loads via route interception, reuse one browser instance across a batch of
+   page loads per invocation.
+4. **`ats_redirect.py`** - shared helper (used by the Wellfound adapter, and
+   reusable later): given a posting's "Apply" URL, detect if it redirects to
+   `boards.greenhouse.io`/`job-boards.greenhouse.io`, `jobs.lever.co`, or
+   `jobs.ashbyhq.com`, extract the board token/company slug + job id, and
+   re-fetch the canonical posting from that ATS's own public Job Board API
+   instead of trusting the scraped page:
+   - Greenhouse: `GET https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{id}`
+   - Lever: `GET https://api.lever.co/v0/postings/{company}?mode=json`
+   - Ashby: `GET https://api.ashbyhq.com/posting-api/job-board/{clientname}`
+
+Populate `JobPosting.ats_platform`/`ats_board_token`/`ats_job_id` when an ATS
+redirect is detected - the pipeline and submission workstreams depend on those
+fields being set correctly. Each adapter is a separate Lambda; don't share
+mutable state between them. Do not implement filtering, research, or drafting
+logic - just return normalized `JobPosting` objects.
+
 ## What this system does
 
 Runs hourly (7am-8pm America/Chicago) via EventBridge Scheduler -> Step Functions.
