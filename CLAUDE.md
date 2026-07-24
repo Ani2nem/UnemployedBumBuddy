@@ -4,6 +4,37 @@ Autonomous, human-supervised job application agent. Full architecture plan lives
 `docs/ARCHITECTURE.md` - this file is the quick-reference for whichever workstream
 you're working in.
 
+## Your task in this worktree (feat/infra)
+
+You own `infra/` only. Build the AWS CDK (Python) stack:
+
+1. DynamoDB tables - all eleven from `src/shared/tables.py` (`TABLE_KEYS` has the
+   pk/sk for each). Use on-demand billing. Add the GSIs called out in
+   `docs/ARCHITECTURE.md` under "DynamoDB tables" (company/status on `SeenJobs`).
+   TTL attribute on `PendingApprovals` and `CompanyResearchCache`.
+2. S3 bucket with the key layout from `docs/ARCHITECTURE.md` section "S3 bucket
+   layout" - just the bucket + folder convention, no need to pre-create empty
+   "folders" (S3 doesn't have real ones).
+3. EventBridge Scheduler: `cron(0 7-20 * * ? *)`, `ScheduleExpressionTimezone:
+   America/Chicago`, targeting the Step Functions state machine directly (no
+   shim Lambda).
+4. Step Functions state machine skeleton ("JobScanOrchestrator", Standard
+   workflow): Parallel state with one branch per source adapter, feeding a Map
+   state (bounded `MaxConcurrency`, e.g. 5) over candidate jobs. Stub the actual
+   per-step Lambda invocations as placeholders (e.g. reference Lambda ARNs via
+   CloudFormation parameters/exports) since the adapters/pipeline/telegram
+   Lambdas are being built in parallel on other branches - don't block on their
+   code existing, just get the state machine shape (Parallel -> dedup -> Map ->
+   waitForTaskToken -> Choice for approve/deny/edit) right so it can be wired
+   up once those Lambdas land.
+5. IAM roles/policies scoped per Lambda (least privilege - e.g. adapters don't
+   need Bedrock access, pipeline Lambdas do, telegram Lambdas need
+   `states:SendTaskSuccess`/`SendTaskFailure`).
+
+Do not implement adapter/pipeline/telegram Lambda logic yourself - just the
+infra shape and IAM. Flag in your PR description any Lambda ARNs/env vars you
+assumed so the other workstreams can match them.
+
 ## What this system does
 
 Runs hourly (7am-8pm America/Chicago) via EventBridge Scheduler -> Step Functions.
