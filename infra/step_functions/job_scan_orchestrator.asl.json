@@ -1,0 +1,658 @@
+{
+  "Comment": "JobScanOrchestrator: scan sources in parallel, dedup + rule-based prefilter, then per-candidate research/match/draft/guard/Telegram-approval/submit with a bounded edit loop. Lambda ARNs are DefinitionSubstitutions filled in from CloudFormation parameters - none of the target functions need to exist yet.",
+  "StartAt": "ScanSources",
+  "States": {
+    "ScanSources": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "InvokeAmazonAdapter",
+          "States": {
+            "InvokeAmazonAdapter": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${AmazonAdapterFunctionArn}",
+                "Payload": {
+                  "source_name": "amazon",
+                  "execution_id.$": "$$.Execution.Id",
+                  "scan_started_at.$": "$$.Execution.StartTime"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "ResultSelector": {
+                "postings.$": "$.Payload.postings"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "InvokeGoogleAdapter",
+          "States": {
+            "InvokeGoogleAdapter": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${GoogleAdapterFunctionArn}",
+                "Payload": {
+                  "source_name": "google",
+                  "execution_id.$": "$$.Execution.Id",
+                  "scan_started_at.$": "$$.Execution.StartTime"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "ResultSelector": {
+                "postings.$": "$.Payload.postings"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "InvokeWellfoundAdapter",
+          "States": {
+            "InvokeWellfoundAdapter": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${WellfoundAdapterFunctionArn}",
+                "Payload": {
+                  "source_name": "wellfound",
+                  "execution_id.$": "$$.Execution.Id",
+                  "scan_started_at.$": "$$.Execution.StartTime"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "ResultSelector": {
+                "postings.$": "$.Payload.postings"
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultSelector": {
+        "branch_postings.$": "$[*].postings"
+      },
+      "ResultPath": "$.scan_results",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ScanFailed"
+        }
+      ],
+      "Next": "DedupAgainstSeenJobs"
+    },
+    "DedupAgainstSeenJobs": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DedupFunctionArn}",
+        "Payload": {
+          "branch_postings.$": "$.scan_results.branch_postings"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "ResultSelector": {
+        "candidates.$": "$.Payload.candidates"
+      },
+      "ResultPath": "$.dedup_result",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ScanFailed"
+        }
+      ],
+      "Next": "RuleBasedPrefilter"
+    },
+    "RuleBasedPrefilter": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PrefilterFunctionArn}",
+        "Payload": {
+          "candidates.$": "$.dedup_result.candidates"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "ResultSelector": {
+        "candidates.$": "$.Payload.candidates"
+      },
+      "ResultPath": "$.prefilter_result",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ScanFailed"
+        }
+      ],
+      "Next": "HasCandidates"
+    },
+    "HasCandidates": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.prefilter_result.candidates[0]",
+          "IsPresent": true,
+          "Next": "ProcessCandidates"
+        }
+      ],
+      "Default": "ScanComplete"
+    },
+    "ProcessCandidates": {
+      "Type": "Map",
+      "ItemsPath": "$.prefilter_result.candidates",
+      "MaxConcurrency": 5,
+      "ItemSelector": {
+        "job.$": "$$.Map.Item.Value",
+        "execution_id.$": "$$.Execution.Id",
+        "edit_count": { "count": 0 }
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "ResearchCompany",
+        "States": {
+          "ResearchCompany": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${ResearchFunctionArn}",
+              "Payload": {
+                "job.$": "$.job"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordJobFailed" }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.research",
+            "Next": "MatchProject"
+          },
+          "MatchProject": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${ProjectMatchFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "research.$": "$.research.payload"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordJobFailed" }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.project_match",
+            "Next": "GenerateDraft"
+          },
+          "GenerateDraft": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${DraftGenerationFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "research.$": "$.research.payload",
+                "project_match.$": "$.project_match.payload"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordJobFailed" }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.draft",
+            "Next": "RateLimitGuard"
+          },
+          "RateLimitGuard": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${RateLimitGuardFunctionArn}",
+              "Payload": {
+                "job.$": "$.job"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordJobFailed" }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.guard",
+            "Next": "IsRateLimited"
+          },
+          "IsRateLimited": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.guard.payload.decision",
+                "StringEquals": "cooldown",
+                "Next": "MarkQueuedCooldown"
+              }
+            ],
+            "Default": "NotifyTelegram"
+          },
+          "MarkQueuedCooldown": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${UpdateJobStatusFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "status": "QUEUED_COOLDOWN"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          },
+          "NotifyTelegram": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+            "TimeoutSeconds": 259200,
+            "Parameters": {
+              "FunctionName": "${TelegramNotifyFunctionArn}",
+              "Payload": {
+                "task_token.$": "$$.Task.Token",
+                "job.$": "$.job",
+                "research.$": "$.research.payload",
+                "project_match.$": "$.project_match.payload",
+                "draft.$": "$.draft.payload",
+                "edit_count.$": "$.edit_count.count"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.Timeout"],
+                "ResultPath": "$.error",
+                "Next": "RecordApprovalTimeout"
+              },
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "RecordJobFailed"
+              }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.approval",
+            "Next": "ApprovalDecision"
+          },
+          "ApprovalDecision": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.approval.payload.decision",
+                "StringEquals": "approve",
+                "Next": "SubmitApplication"
+              },
+              {
+                "Variable": "$.approval.payload.decision",
+                "StringEquals": "edit",
+                "Next": "CheckEditLimit"
+              }
+            ],
+            "Default": "RecordDenied"
+          },
+          "CheckEditLimit": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.edit_count.count",
+                "NumericLessThan": 3,
+                "Next": "IncrementEditCount"
+              }
+            ],
+            "Default": "RecordMaxEditsReached"
+          },
+          "IncrementEditCount": {
+            "Type": "Pass",
+            "Parameters": {
+              "count.$": "States.MathAdd($.edit_count.count, 1)"
+            },
+            "ResultPath": "$.edit_count",
+            "Next": "ReviseDraft"
+          },
+          "ReviseDraft": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${DraftGenerationFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "research.$": "$.research.payload",
+                "project_match.$": "$.project_match.payload",
+                "previous_draft.$": "$.draft.payload",
+                "edit_feedback.$": "$.approval.payload.edit_feedback"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordJobFailed" }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.draft",
+            "Next": "NotifyTelegram"
+          },
+          "SubmitApplication": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${SubmitFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "draft.$": "$.draft.payload"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordJobFailed" }
+            ],
+            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultPath": "$.submission",
+            "Next": "RecordSubmitted"
+          },
+          "RecordSubmitted": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${UpdateJobStatusFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "submission.$": "$.submission.payload",
+                "status": "SUBMITTED"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          },
+          "RecordDenied": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${UpdateJobStatusFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "status": "DENIED"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          },
+          "RecordMaxEditsReached": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${UpdateJobStatusFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "status": "PENDING_APPROVAL",
+                "reason": "max_edits_reached"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          },
+          "RecordApprovalTimeout": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${UpdateJobStatusFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "status": "EXPIRED"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          },
+          "RecordJobFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${UpdateJobStatusFunctionArn}",
+              "Payload": {
+                "job.$": "$.job",
+                "status": "FILTERED_OUT",
+                "reason": "pipeline_error",
+                "error.$": "$.error"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Next": "ScanComplete"
+    },
+    "ScanComplete": {
+      "Type": "Succeed"
+    },
+    "ScanFailed": {
+      "Type": "Fail",
+      "Error": "ScanPipelineFailed",
+      "Cause": "Parallel scan / dedup / prefilter stage failed before any candidates could be processed."
+    }
+  }
+}
