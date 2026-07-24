@@ -4,6 +4,40 @@ Autonomous, human-supervised job application agent. Full architecture plan lives
 `docs/ARCHITECTURE.md` - this file is the quick-reference for whichever workstream
 you're working in.
 
+## Your task in this worktree (feat/telegram-hitl)
+
+You own `src/telegram/` only. Build the human-in-the-loop channel - this is
+the piece that must never block the hourly scan loop.
+
+1. **`webhook.py`** - API Gateway HTTP API -> Lambda, registered as the
+   Telegram bot's webhook. Two paths:
+   - **Callback query** (inline keyboard Approve/Deny/Edit, `callback_data`
+     encodes `{action}:{job_id}`): look up `PendingApprovals[job_id]` for the
+     stored `task_token`, then call Step Functions
+     `SendTaskSuccess`/`SendTaskFailure` with `{action, feedback_text}`. On
+     "Edit", expect a follow-up free-text message with the user's edit
+     instructions before resuming (bump `revision_count`, bounded retries).
+   - **Free-text message with no pending-approval context**: this is an ad hoc
+     question. Return 200 immediately, send a "researching..." placeholder,
+     then push the question to SQS - do not call Serper/Nova Lite
+     synchronously inside the webhook (API Gateway has a 29s timeout).
+2. **`send_and_wait.py`** - the Lambda invoked via
+   `arn:aws:states:::lambda:invoke.waitForTaskToken` from the Step Functions
+   Map state (owned by `feat/infra`, but this Lambda is what it calls). Sends
+   the brief + draft to Telegram with inline keyboard buttons, persists
+   `{job_id, task_token, telegram_chat_id, telegram_message_id, brief_text,
+   draft_text}` into `PendingApprovals`, and returns immediately - it must NOT
+   wait synchronously for the human response.
+3. **`qa_worker.py`** - SQS consumer. Takes a free-text question, uses Serper +
+   Nova Lite to research/answer, resolves which job the question refers to via
+   `ConversationState[chat_id].last_context_job_id` (update that field whenever
+   a new brief is sent so "tell me more about this" resolves correctly), and
+   posts the answer back via Telegram's `sendMessage` API.
+
+Do not implement adapter/pipeline logic yourself - assume you receive a brief
++ draft as input and are responsible only for the Telegram round-trip and
+resuming the correct Step Functions execution.
+
 ## What this system does
 
 Runs hourly (7am-8pm America/Chicago) via EventBridge Scheduler -> Step Functions.
