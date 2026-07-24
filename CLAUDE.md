@@ -4,6 +4,60 @@ Autonomous, human-supervised job application agent. Full architecture plan lives
 `docs/ARCHITECTURE.md` - this file is the quick-reference for whichever workstream
 you're working in.
 
+## Your task in this worktree (feat/pipeline)
+
+You own `src/pipeline/` only. Build the filtering/research/drafting logic that
+runs between the adapters (`feat/adapters`, not your concern) and the Telegram
+HITL step (`feat/telegram-hitl`, not your concern). Consume/produce
+`JobPosting` objects from `src/shared/contracts.py` (read-only).
+
+1. **`dedup.py`** - check/update `SeenJobs` (DynamoDB) by `job_key`
+   (`{source}#{external_id}`).
+2. **`visa_level_filter.py`** - cheap rules first:
+   - Location filter, visa keyword scan (explicit JD statement wins
+     immediately, either direction).
+   - If JD is silent: DOL LCA disclosure-data matching against `SponsorHistory`
+     (per §"Visa + experience-level filtering" in `docs/ARCHITECTURE.md`) -
+     normalize employer name, pull filings from the last 2 years, match against
+     the posting's salary range AND title/seniority (via `pw_wage_level` and/or
+     Titan-embedding title similarity - no LLM call for this matching step). A
+     match within 2 years passes; no match excludes (this is a hard exclude,
+     not a lenient default-pass).
+   - Experience-level band: asymmetric, allow ~+2 levels above the profile's
+     current level (be ambitious), hard-exclude only clearly-below or
+     dramatically-above roles.
+   - Only when genuinely inconclusive: one Nova Lite call (Bedrock,
+     `amazon.nova-lite-v1:0` or current Nova Lite model id) with structured
+     JSON output `{visa_likely, level_match, rationale}`.
+   - Also build the **DOL LCA ETL** as a one-time/periodic offline script
+     (not a recurring Lambda) that downloads the public DOL OFLC quarterly
+     disclosure files, filters to the last ~2 years, and loads `SponsorHistory`
+     records (`employer_normalized` / `decision_date#case_id` with
+     `job_title`, `soc_title`, `wage_from`, `wage_to`, `pw_wage_level`). Flag
+     employer-name-normalization (legal filer name vs brand name) as a known
+     open problem - build an alias table for known target companies (Amazon,
+     Google/Alphabet subsidiary filer names) plus fuzzy-match fallback for
+     others.
+3. **`research.py`** - Serper search (query templates differ for
+   `is_startup` vs big-company, per the architecture doc), one Nova Lite call
+   per job producing both the Telegram brief text and tone-matching guidance
+   in a single JSON-mode call. Cache by `company_normalized` in
+   `CompanyResearchCache` with a 14-day TTL - check the cache before spending
+   on Serper/Nova Lite again for a company you've already researched.
+4. **`project_match.py`** - Titan Text Embeddings V2: embed each `Projects`
+   item once at ingestion time (store the embedding), embed the JD once at
+   match time, compute cosine similarity in-Lambda with numpy against all
+   cached project embeddings (small corpus, full scan is fine, no vector DB).
+   Select top 2-3 above a similarity threshold.
+5. **`draft.py`** - Nova Lite drafting call: retrieve 2-3 relevant
+   `StyleExamples` (tag or embedding based) as few-shot examples, plus the JD
+   summary, chosen project(s)/links, and tone guidance from research. Output
+   JSON: `{draft_text, projects_referenced, confidence_notes}`.
+
+Do not implement Telegram sending/approval logic or adapter scraping - assume
+you receive a `JobPosting` as input and produce filter/research/draft outputs
+as output.
+
 ## What this system does
 
 Runs hourly (7am-8pm America/Chicago) via EventBridge Scheduler -> Step Functions.
