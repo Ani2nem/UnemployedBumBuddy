@@ -1,8 +1,16 @@
-"""DynamoDB tables + S3 bucket.
+"""DynamoDB tables + S3 bucket + the QA SQS queue.
 
 Table names/keys are sourced from `src/shared/tables.py` (the frozen shared
 contract) so a rename there only ever needs a `cdk deploy` here, never a
 second copy of the string.
+
+The QA queue lives here (not in `lambda_stack.py`, where it's actually used)
+so `IamStack` can grant send/consume permissions on it while scoping
+`TelegramWebhookFunctionRole`/`QaWorkerFunctionRole` - those roles need to
+exist before `LambdaStack` creates the functions that use them, and
+`IamStack` already depends on `DataStack` for tables/bucket the same way, so
+this keeps that one-directional dependency order intact instead of `LambdaStack`
+looping back to mutate roles owned by `IamStack` (a real cycle CDK rejects).
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_dynamodb as ddb
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
 from src.shared.tables import SEEN_JOBS_TABLE, TABLE_KEYS
@@ -36,6 +45,17 @@ class DataStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        # PROVISIONED (not on-demand) with a fixed 1/1 RCU/WCU per table/GSI is
+        # deliberate: DynamoDB's Always-Free tier (25 RCU + 25 WCU, shared
+        # across every table+GSI in the account/region, never expires) only
+        # applies to provisioned capacity - PAY_PER_REQUEST bills every
+        # request from the first one. 11 tables + 2 GSIs = 13 slots x 1/1 = 13
+        # RCU/13 WCU, comfortably under the 25/25 pool with headroom to bump
+        # a specific table later if CloudWatch shows it throttling. See
+        # docs/ARCHITECTURE.md "Cost estimate" / cost-guardrails notes.
+        FREE_TIER_RCU = 1
+        FREE_TIER_WCU = 1
+
         self.tables: dict[str, ddb.Table] = {}
         for table_name, keys in TABLE_KEYS.items():
             table = ddb.Table(
@@ -48,7 +68,9 @@ class DataStack(Stack):
                     if "sk" in keys
                     else None
                 ),
-                billing_mode=ddb.BillingMode.PAY_PER_REQUEST,
+                billing_mode=ddb.BillingMode.PROVISIONED,
+                read_capacity=FREE_TIER_RCU,
+                write_capacity=FREE_TIER_WCU,
                 point_in_time_recovery_specification=ddb.PointInTimeRecoverySpecification(
                     point_in_time_recovery_enabled=True
                 ),
@@ -75,10 +97,14 @@ class DataStack(Stack):
         seen_jobs.add_global_secondary_index(
             index_name="CompanyIndex",
             partition_key=ddb.Attribute(name="company", type=ddb.AttributeType.STRING),
+            read_capacity=FREE_TIER_RCU,
+            write_capacity=FREE_TIER_WCU,
         )
         seen_jobs.add_global_secondary_index(
             index_name="StatusIndex",
             partition_key=ddb.Attribute(name="status", type=ddb.AttributeType.STRING),
+            read_capacity=FREE_TIER_RCU,
+            write_capacity=FREE_TIER_WCU,
         )
 
         # S3: the actual documents (DynamoDB rows above only ever hold keys
@@ -120,3 +146,15 @@ class DataStack(Stack):
             value=self.bucket.bucket_arn,
             export_name="UnemployedBumBuddy-DocumentsBucket-Arn",
         )
+
+        # QA queue: webhook.py (producer) -> qa_worker.py (consumer), for ad
+        # hoc Telegram questions that can't run synchronously inside the
+        # 29s-limited webhook. See module docstring for why this lives here.
+        self.qa_dlq = sqs.Queue(self, "QaQueueDLQ", retention_period=Duration.days(14))
+        self.qa_queue = sqs.Queue(
+            self,
+            "QaQueue",
+            visibility_timeout=Duration.seconds(90),
+            dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=self.qa_dlq),
+        )
+        CfnOutput(self, "QaQueueUrl", value=self.qa_queue.queue_url)

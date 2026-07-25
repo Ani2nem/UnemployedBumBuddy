@@ -16,7 +16,7 @@ import json
 import logging
 from typing import Any
 
-from src.telegram import research, store, telegram_api
+from telegram import research, store, telegram_api
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

@@ -77,3 +77,7 @@ COMPANY_RESEARCH_CACHE_TTL_DAYS = 14
 # --- Project match ---
 PROJECT_MATCH_SIMILARITY_THRESHOLD = 0.55
 PROJECT_MATCH_TOP_K = 3
+
+# --- Applicant profile ---
+# Single-user tool - exactly one ApplicantProfile row, under this fixed key.
+DEFAULT_PROFILE_ID = "default"

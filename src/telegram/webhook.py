@@ -25,7 +25,7 @@ from typing import Any
 
 import boto3
 
-from src.telegram import config, step_functions, store, telegram_api
+from telegram import config, step_functions, store, telegram_api
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -119,7 +119,7 @@ def _resolve(
     status_line: str,
     ack_text: str,
 ) -> None:
-    step_functions.send_task_success(pending["task_token"], {"action": action, "feedback_text": None})
+    step_functions.send_task_success(pending["task_token"], {"decision": action, "edit_feedback": None})
     store.delete_pending_approval(job_id)
     store.clear_awaiting_edit_if_matches(chat_id, job_id)
     telegram_api.edit_message_text(
@@ -165,7 +165,7 @@ def _handle_edit_feedback(chat_id: int, job_id: str, feedback_text: str) -> None
         return
 
     step_functions.send_task_success(
-        pending["task_token"], {"action": "edit", "feedback_text": feedback_text}
+        pending["task_token"], {"decision": "edit", "edit_feedback": feedback_text}
     )
     telegram_api.send_message(chat_id, "Got it, drafting a revision now.")
 

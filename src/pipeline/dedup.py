@@ -8,11 +8,13 @@ the same posting is new - only the put that actually inserts the row wins.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from botocore.exceptions import ClientError
 
 from pipeline.dynamo import get_table
 from shared.contracts import JobPosting
+from shared.serialize import job_posting_from_dict, job_posting_to_dict
 from shared.tables import SEEN_JOBS_STATUS_VALUES, SEEN_JOBS_TABLE
 
 
@@ -92,3 +94,18 @@ def update_status(job_key: str, status: str, **extra_attrs: object) -> None:
         ExpressionAttributeNames=expr_attr_names,
         ExpressionAttributeValues=expr_attr_values,
     )
+
+
+# --- Lambda entrypoint (Step Functions "DedupAgainstSeenJobs") ---
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Event: `{"branch_postings": [[JobPosting dict, ...], ...]}` - one list
+    per adapter branch, per the ASL's `ScanSources` `ResultSelector`.
+    """
+    branch_postings = event.get("branch_postings") or []
+    postings = [
+        job_posting_from_dict(raw) for branch in branch_postings for raw in (branch or [])
+    ]
+    new_postings = filter_new(postings)
+    return {"candidates": [job_posting_to_dict(p) for p in new_postings]}

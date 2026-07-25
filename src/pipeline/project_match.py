@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
+from typing import Any
 
 from pipeline import embeddings
 from pipeline.config import PROJECT_MATCH_SIMILARITY_THRESHOLD, PROJECT_MATCH_TOP_K
@@ -104,3 +105,21 @@ def match_projects(
     scored.sort(key=lambda match: match.similarity, reverse=True)
     above_threshold = [match for match in scored if match.similarity >= threshold]
     return above_threshold[:top_k]
+
+
+# --- Lambda entrypoint (Step Functions "MatchProject") ---
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Event: `{"job": JobPosting dict, "research": {...}}` (research is
+    unused here - matching is JD-text-only - but present since the ASL passes
+    it through uniformly to every per-candidate stage).
+    """
+    job = event["job"]
+    matches = match_projects(job["description_text"])
+    return {
+        "matches": [
+            {"project_id": m.project_id, "title": m.title, "similarity": m.similarity}
+            for m in matches
+        ]
+    }

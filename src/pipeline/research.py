@@ -182,3 +182,25 @@ def research_company(
     )
     put_cached_research(result)
     return result
+
+
+# --- Lambda entrypoint (Step Functions "ResearchCompany") ---
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Event: `{"job": JobPosting dict}`.
+
+    `is_startup` has no signal on `JobPosting` today, so this always uses the
+    big-company query template (`build_search_queries`'s `is_startup=False`
+    branch) - a startup-detection heuristic is a reasonable follow-up, not
+    required for the pipeline to run.
+    """
+    job = event["job"]
+    result = research_company(job["company"])
+    return {
+        "company_normalized": result.company_normalized,
+        "brief_text": result.brief_text,
+        "tone_guidance": result.tone_guidance,
+        "sources": result.sources,
+        "cached": result.cached,
+    }

@@ -110,7 +110,11 @@ Event-sourced `ApplicationEvents` (immutable rows, not mutable counters) makes r
 
 ### Cost estimate
 
-Roughly **$10-25/month** at ~14 scan cycles/day across 3-4 sources: Nova Lite + Titan embeddings a few dollars, DynamoDB/S3/API Gateway/SES near-zero, Playwright container Lambdas $3-8, Step Functions $1.5-2.5, Serper likely within free tier. Set an AWS Budgets alert (e.g. $30/mo) from day one. This is directional - real cost depends on how many postings clear the rule-based filters.
+Roughly **$10-25/month** at ~14 scan cycles/day across 3-4 sources: Nova Lite + Titan embeddings a few dollars, Playwright container Lambdas $3-8, Step Functions $1.5-2.5.
+Lambda, DynamoDB, Step Functions, and EventBridge Scheduler are all sized to fit AWS's perpetual Always-Free tier (see "Cost guardrails" in the root `CLAUDE.md`), so they contribute near-zero.
+Bedrock and Serper have no perpetual free tier - Serper's 2,500 free queries are a one-time signup credit, not a recurring monthly allowance, so budget for it from day one rather than assuming it stays free.
+This is directional - real cost depends on how many postings clear the rule-based filters.
+A hard-stop AWS Budget with an auto-executing kill-switch (`infra/stacks/budget_stack.py`) replaces the informal "set a Budgets alert" plan below: past a configurable monthly ceiling (default $5), it automatically blocks further scan executions rather than just notifying.
 
 ### Build phases
 

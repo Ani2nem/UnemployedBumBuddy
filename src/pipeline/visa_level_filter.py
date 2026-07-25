@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pipeline import embeddings, llm
 from pipeline.config import (
@@ -45,7 +45,9 @@ from pipeline.employer_normalize import (
     normalize_employer_name,
 )
 from pipeline.models import CandidateProfile, ExperienceLevel, FilterResult, SponsorFiling
+from pipeline.profile import load_candidate_profile
 from shared.contracts import JobPosting
+from shared.serialize import job_posting_from_dict, job_posting_to_dict
 from shared.tables import SPONSOR_HISTORY_TABLE
 
 LcaOutcome = Literal["match", "no_evidence", "ruled_out", "ambiguous"]
@@ -430,3 +432,21 @@ def filter_posting(
         visa_likely=visa_likely,
         level_match=level_match,
     )
+
+
+# --- Lambda entrypoint (Step Functions "RuleBasedPrefilter") ---
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Event: `{"candidates": [JobPosting dict, ...]}` (Dedup's output).
+
+    Returns only the postings that passed both the visa and experience-level
+    gates. Doesn't record `FilterResult` reasons for excluded postings
+    anywhere yet - `RecordJobFailed`/`UpdateJobStatus` only fires for
+    downstream pipeline errors, not rule-based exclusions, so a filtered-out
+    posting is currently silent rather than logged as `FILTERED_OUT`.
+    """
+    profile = load_candidate_profile()
+    candidates = [job_posting_from_dict(raw) for raw in event.get("candidates") or []]
+    passed = [posting for posting in candidates if filter_posting(posting, profile).passed]
+    return {"candidates": [job_posting_to_dict(p) for p in passed]}

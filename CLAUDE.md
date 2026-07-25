@@ -1,39 +1,7 @@
 # UnemployedBumBuddy
 
 Autonomous, human-supervised job application agent. Full architecture plan lives at
-`docs/ARCHITECTURE.md` - this file is the quick-reference for whichever workstream
-you're working in.
-
-## Your task in this worktree (feat/infra)
-
-You own `infra/` only. Build the AWS CDK (Python) stack:
-
-1. DynamoDB tables - all eleven from `src/shared/tables.py` (`TABLE_KEYS` has the
-   pk/sk for each). Use on-demand billing. Add the GSIs called out in
-   `docs/ARCHITECTURE.md` under "DynamoDB tables" (company/status on `SeenJobs`).
-   TTL attribute on `PendingApprovals` and `CompanyResearchCache`.
-2. S3 bucket with the key layout from `docs/ARCHITECTURE.md` section "S3 bucket
-   layout" - just the bucket + folder convention, no need to pre-create empty
-   "folders" (S3 doesn't have real ones).
-3. EventBridge Scheduler: `cron(0 7-20 * * ? *)`, `ScheduleExpressionTimezone:
-   America/Chicago`, targeting the Step Functions state machine directly (no
-   shim Lambda).
-4. Step Functions state machine skeleton ("JobScanOrchestrator", Standard
-   workflow): Parallel state with one branch per source adapter, feeding a Map
-   state (bounded `MaxConcurrency`, e.g. 5) over candidate jobs. Stub the actual
-   per-step Lambda invocations as placeholders (e.g. reference Lambda ARNs via
-   CloudFormation parameters/exports) since the adapters/pipeline/telegram
-   Lambdas are being built in parallel on other branches - don't block on their
-   code existing, just get the state machine shape (Parallel -> dedup -> Map ->
-   waitForTaskToken -> Choice for approve/deny/edit) right so it can be wired
-   up once those Lambdas land.
-5. IAM roles/policies scoped per Lambda (least privilege - e.g. adapters don't
-   need Bedrock access, pipeline Lambdas do, telegram Lambdas need
-   `states:SendTaskSuccess`/`SendTaskFailure`).
-
-Do not implement adapter/pipeline/telegram Lambda logic yourself - just the
-infra shape and IAM. Flag in your PR description any Lambda ARNs/env vars you
-assumed so the other workstreams can match them.
+`docs/ARCHITECTURE.md`.
 
 ## What this system does
 
@@ -49,20 +17,57 @@ approval, submits via ATS API where possible, otherwise holds for manual submiss
 Stack: AWS Lambda, Step Functions, EventBridge Scheduler, DynamoDB, S3, Bedrock (Nova
 Lite + Titan Text Embeddings V2), Serper (search), Telegram (HITL). All Python.
 
-## Repo layout / worktree ownership
+## Repo layout
 
-This repo is being built by multiple parallel agents, each in its own git worktree on
-its own branch. **Only touch the directory your worktree owns.** If you need a change
-in `src/shared/`, stop and flag it instead of editing - those are frozen contracts every
-other workstream depends on, and changes need to land on `main` deliberately.
+The initial build was split across four parallel git worktrees (`feat/infra`,
+`feat/adapters`, `feat/pipeline`, `feat/telegram-hitl`), each scoped to one directory.
+All four have since been merged into `main` and the worktrees removed - this is a single
+unified checkout now, no more per-workstream `CLAUDE.md` scoping.
 
-| Directory | Branch | Owner scope |
-|---|---|---|
-| `infra/` | `feat/infra` | CDK: DynamoDB tables, S3 bucket, IAM roles, EventBridge Scheduler, Step Functions state machine skeleton |
-| `src/adapters/` | `feat/adapters` | `JobSourceAdapter` implementations (Amazon, Google, Wellfound), ATS-redirect detection |
-| `src/pipeline/` | `feat/pipeline` | Visa/level filtering incl. DOL LCA matching, research (Serper + Nova Lite), project-match embeddings, draft generation |
-| `src/telegram/` | `feat/telegram-hitl` | Webhook handler, `waitForTaskToken` glue, async Q&A worker, SQS wiring |
-| `src/shared/` | (main only) | `contracts.py` (`JobPosting`, `JobSourceAdapter`), `tables.py` (DynamoDB table/key names) - frozen, read-only from feature branches |
+| Directory | What it owns |
+|---|---|
+| `infra/` | CDK: DynamoDB tables, S3 bucket, IAM roles, EventBridge Scheduler, Step Functions state machine, AWS Budget cost guardrail |
+| `src/adapters/` | `JobSourceAdapter` implementations (Amazon, Google, Wellfound), ATS-redirect detection |
+| `src/pipeline/` | Visa/level filtering incl. DOL LCA matching, research (Serper + Nova Lite), project-match embeddings, draft generation |
+| `src/telegram/` | Webhook handler, `waitForTaskToken` glue, async Q&A worker, SQS wiring |
+| `src/shared/` | `contracts.py` (`JobPosting`, `JobSourceAdapter`), `tables.py` (DynamoDB table/key names) - the frozen contract everything else codes against |
+
+## Local development setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[adapters,pipeline,telegram,dev]"
+pytest
+```
+
+CDK app lives in `infra/` with its own `requirements.txt` (`aws-cdk-lib`, `constructs`);
+install that separately into the same venv before running `cdk synth`/`cdk deploy` there.
+
+## Cost guardrails (no perpetual free tier for Bedrock/Serper)
+
+Lambda, DynamoDB, Step Functions, and EventBridge Scheduler are all sized to fit inside
+AWS's **Always Free** tier (perpetual, not the 12-month new-account one):
+DynamoDB tables/GSIs are **provisioned** at a fixed 1 RCU/1 WCU each (13 slots = 13/13,
+under the shared 25/25 pool) - deliberately not on-demand billing, which gets zero free
+request allowance. Bump a specific table's capacity by hand if CloudWatch shows it
+throttling; don't switch back to on-demand.
+
+Bedrock (Nova Lite + Titan embeddings) and Serper have **no** perpetual free tier and will
+always cost something once real usage starts - see "Cost estimate" in
+`docs/ARCHITECTURE.md` (~$10-25/mo at full volume). `infra/stacks/budget_stack.py` is the
+guardrail for that: an AWS Budget with an auto-executing kill-switch action that attaches
+a Deny policy to the EventBridge Scheduler's role once the month's actual spend crosses
+`BudgetLimitUsd` (default $5), blocking all further scan executions until manually
+cleared. Deploy requires an email parameter that is intentionally not in source:
+
+```bash
+cdk deploy UnemployedBumBuddyBudgetStack \
+  --parameters UnemployedBumBuddyBudgetStack:BudgetNotificationEmail=you@example.com
+```
+
+Read the caveats in that file's module docstring before relying on it - Cost Explorer
+data lags actual spend by up to ~24h, so this bounds a creeping overrun within about a
+day, not a same-second burst.
 
 ## Key design decisions to keep in mind
 
@@ -76,8 +81,3 @@ other workstream depends on, and changes need to land on `main` deliberately.
   Outreach to individuals is email-only.
 - Cost-consciousness matters: prefer rule-based filtering over LLM calls, cache research
   per-company (not per-job), use embeddings instead of per-item LLM calls for matching.
-
-## Commit discipline
-
-Commit only to your own branch. Don't merge or rebase `main` yourself - flag to the user
-when your workstream is ready to integrate.

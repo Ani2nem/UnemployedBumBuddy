@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from src.telegram import config
+from telegram import config
 
 _TIMEOUT = httpx.Timeout(10.0)
 

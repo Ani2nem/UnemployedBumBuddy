@@ -9,6 +9,11 @@ TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_API_BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 TELEGRAM_MESSAGE_LIMIT = 4096
 
+# Single-user tool - one fixed chat, not a per-job value. NotifyTelegram
+# doesn't receive a chat id from the state machine (the ASL payload only
+# carries job/research/draft data), so this is the only source of it.
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
 QA_QUEUE_URL = os.environ.get("QA_QUEUE_URL", "")
 
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")

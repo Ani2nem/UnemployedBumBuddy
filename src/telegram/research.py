@@ -10,7 +10,7 @@ from __future__ import annotations
 import boto3
 import httpx
 
-from src.telegram import config
+from telegram import config
 
 _bedrock = boto3.client("bedrock-runtime", region_name=config.BEDROCK_REGION)
 

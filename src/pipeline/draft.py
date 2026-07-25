@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
+from typing import Any
 
 from pipeline import embeddings, llm
 from pipeline.dynamo import get_table
 from pipeline.models import DraftResult, ProjectMatch, StyleExample
 from shared.contracts import JobPosting
+from shared.serialize import job_posting_from_dict
 from shared.tables import PROJECTS_TABLE, STYLE_EXAMPLES_TABLE
 
 DEFAULT_STYLE_EXAMPLE_COUNT = 3
@@ -143,6 +145,9 @@ def _build_draft_user_prompt(
     projects: list[dict],
     tone_guidance: str,
     style_examples: list[StyleExample],
+    *,
+    previous_draft: str | None = None,
+    edit_feedback: str | None = None,
 ) -> str:
     projects_block = "\n".join(
         f"- {p['project_id']}: {p.get('title', '')} - {p.get('description', '')} "
@@ -153,6 +158,14 @@ def _build_draft_user_prompt(
         f"Style example {i + 1} ({example.scenario_tag}):\n{example.text}"
         for i, example in enumerate(style_examples)
     )
+    revision_block = (
+        f"\n\nThis is a REVISION. The candidate rejected the previous draft below and asked for "
+        f"changes - apply their feedback, don't just rephrase the same draft.\n"
+        f"Previous draft:\n{previous_draft}\n\n"
+        f"Candidate's edit instructions:\n{edit_feedback}"
+        if previous_draft is not None
+        else ""
+    )
     return (
         f"Job title: {posting.title}\n"
         f"Company: {posting.company}\n"
@@ -160,6 +173,7 @@ def _build_draft_user_prompt(
         f"Tone guidance for this company: {tone_guidance}\n\n"
         f"Candidate's relevant projects:\n{projects_block or '(none matched)'}\n\n"
         f"Style examples of the candidate's own past writing:\n{examples_block or '(none available)'}"
+        f"{revision_block}"
     )
 
 
@@ -171,9 +185,15 @@ def draft_application(
     scenario_tag: str | None = None,
     project_details: list[dict] | None = None,
     style_examples: list[StyleExample] | None = None,
+    previous_draft: str | None = None,
+    edit_feedback: str | None = None,
     llm_invoke: Callable[[str, str], dict] = llm.invoke_json,
     embed_fn: Callable[[str], list[float]] = embeddings.embed_text,
 ) -> DraftResult:
+    """`previous_draft`/`edit_feedback` are set only on a revision (the ASL's
+    `ReviseDraft` state calls this same function after a Telegram "Edit" tap) -
+    the initial draft leaves both `None`.
+    """
     projects = (
         project_details
         if project_details is not None
@@ -187,10 +207,48 @@ def draft_application(
 
     llm_result = llm_invoke(
         _DRAFT_SYSTEM_PROMPT,
-        _build_draft_user_prompt(posting, projects, tone_guidance, examples),
+        _build_draft_user_prompt(
+            posting,
+            projects,
+            tone_guidance,
+            examples,
+            previous_draft=previous_draft,
+            edit_feedback=edit_feedback,
+        ),
     )
     return DraftResult(
         draft_text=llm_result.get("draft_text", ""),
         projects_referenced=list(llm_result.get("projects_referenced", [])),
         confidence_notes=llm_result.get("confidence_notes", ""),
     )
+
+
+# --- Lambda entrypoint (Step Functions "GenerateDraft" and "ReviseDraft") ---
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Same function backs both ASL states - `GenerateDraft`'s event has no
+    `previous_draft`/`edit_feedback`; `ReviseDraft`'s does (see the ASL's
+    `ReviseDraft.Parameters`), which is exactly what `draft_application`'s
+    revision path expects.
+    """
+    job = job_posting_from_dict(event["job"])
+    research = event.get("research") or {}
+    project_matches = [
+        ProjectMatch(project_id=m["project_id"], title=m["title"], similarity=m["similarity"])
+        for m in (event.get("project_match") or {}).get("matches", [])
+    ]
+    previous_draft = event.get("previous_draft") or {}
+
+    result = draft_application(
+        job,
+        project_matches,
+        research.get("tone_guidance", ""),
+        previous_draft=previous_draft.get("draft_text"),
+        edit_feedback=event.get("edit_feedback"),
+    )
+    return {
+        "draft_text": result.draft_text,
+        "projects_referenced": result.projects_referenced,
+        "confidence_notes": result.confidence_notes,
+    }

@@ -19,12 +19,14 @@ from aws_cdk import Aws, CfnOutput, Stack
 from aws_cdk import aws_dynamodb as ddb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
 from src.shared.tables import (
     APPLICANT_PROFILE_TABLE,
     APPLICATION_EVENTS_TABLE,
     COMPANY_RESEARCH_CACHE_TABLE,
+    CONVERSATION_STATE_TABLE,
     PENDING_APPROVALS_TABLE,
     PROJECTS_TABLE,
     RATE_LIMIT_POLICY_TABLE,
@@ -46,6 +48,7 @@ class IamStack(Stack):
         *,
         tables: dict[str, ddb.Table],
         bucket: s3.Bucket,
+        qa_queue: sqs.Queue,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -81,7 +84,8 @@ class IamStack(Stack):
             statements=[
                 self._table_statement(SPONSOR_HISTORY_TABLE, write=False),
                 self._table_statement(SEEN_JOBS_TABLE, write=True),
-                self._bedrock_invoke_statement([nova_lite_arn]),
+                self._table_statement(APPLICANT_PROFILE_TABLE, write=False),
+                self._bedrock_invoke_statement([nova_lite_arn, titan_embed_arn]),
             ],
         )
 
@@ -112,11 +116,12 @@ class IamStack(Stack):
             statements=[
                 self._table_statement(STYLE_EXAMPLES_TABLE, write=False),
                 self._table_statement(APPLICANT_PROFILE_TABLE, write=False),
+                self._table_statement(PROJECTS_TABLE, write=False),
                 self._s3_read_statement("projects/*"),
                 self._s3_read_statement("style-examples/*"),
                 self._s3_read_statement("jobs/*"),
                 self._s3_write_statement("drafts/*"),
-                self._bedrock_invoke_statement([nova_lite_arn]),
+                self._bedrock_invoke_statement([nova_lite_arn, titan_embed_arn]),
             ],
         )
 
@@ -135,6 +140,7 @@ class IamStack(Stack):
             "TelegramNotifyFunctionRole",
             statements=[
                 self._table_statement(PENDING_APPROVALS_TABLE, write=True),
+                self._table_statement(CONVERSATION_STATE_TABLE, write=True),
                 self._secret_read_statement("telegram-bot-token"),
             ],
         )
@@ -173,6 +179,8 @@ class IamStack(Stack):
             "TelegramWebhookFunctionRole",
             statements=[
                 self._table_statement(PENDING_APPROVALS_TABLE, write=True),
+                self._table_statement(CONVERSATION_STATE_TABLE, write=True),
+                self._secret_read_statement("telegram-bot-token"),
                 iam.PolicyStatement(
                     actions=[
                         "states:SendTaskSuccess",
@@ -183,9 +191,24 @@ class IamStack(Stack):
                 ),
             ],
         )
-        # Note: the qa_worker Lambda (async Q&A) and its SQS queue are owned
-        # by feat/telegram-hitl per the worktree ownership table, so no role
-        # is pre-provisioned for it here - flagged in the PR description.
+        # --- QA worker (SQS-triggered async Q&A): reads PendingApprovals +
+        # ConversationState to resolve job context, Serper (secret) + Nova
+        # Lite to answer. SQS consume permission is granted separately in
+        # LambdaStack once the queue exists - a queue is a resource, not a
+        # role, so it doesn't belong here.
+        self._make_role(
+            "QaWorkerFunctionRole",
+            statements=[
+                self._table_statement(PENDING_APPROVALS_TABLE, write=False),
+                self._table_statement(CONVERSATION_STATE_TABLE, write=False),
+                self._bedrock_invoke_statement([nova_lite_arn]),
+                self._secret_read_statement("serper-api-key"),
+                self._secret_read_statement("telegram-bot-token"),
+            ],
+        )
+
+        qa_queue.grant_send_messages(self.roles["TelegramWebhookFunctionRole"])
+        qa_queue.grant_consume_messages(self.roles["QaWorkerFunctionRole"])
 
         for name, role in self.roles.items():
             CfnOutput(

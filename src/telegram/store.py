@@ -20,8 +20,8 @@ from typing import Any
 
 import boto3
 
-from src.shared.tables import CONVERSATION_STATE_TABLE, PENDING_APPROVALS_TABLE
-from src.telegram import config
+from shared.tables import CONVERSATION_STATE_TABLE, PENDING_APPROVALS_TABLE
+from telegram import config
 
 _dynamodb = boto3.resource("dynamodb")
 _pending_approvals = _dynamodb.Table(PENDING_APPROVALS_TABLE)

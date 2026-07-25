@@ -167,7 +167,7 @@ def _parse_posted_date(value: str | None) -> datetime | None:
 
 
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
-    from adapters._serialize import job_posting_to_dict
+    from shared.serialize import job_posting_to_dict
 
     since_raw = event.get("since")
     since = datetime.fromisoformat(since_raw) if since_raw else None

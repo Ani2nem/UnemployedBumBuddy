@@ -1,2 +1,6 @@
-aws-cdk-lib>=2.170.0,<3.0.0
+# aws-cdk-lib is pinned exactly (not a range) because aws-cdk.aws-lambda-python-alpha
+# below must match its version precisely - alpha modules version in lockstep with
+# the core library and only install against that exact release.
+aws-cdk-lib==2.262.1
 constructs>=10.0.0,<11.0.0
+aws-cdk.aws-lambda-python-alpha==2.262.1a0

@@ -1,18 +1,23 @@
 """Lambda invoked by Step Functions' `lambda:invoke.waitForTaskToken` integration.
 
 Owned here because it's the piece of the Map-state loop that talks to
-Telegram; the state machine definition itself belongs to feat/infra.
+Telegram; the state machine definition itself belongs to `infra/`.
 
-Expected event (the Step Functions "Payload", built via the ASL's
-Parameters block, using `$$.Task.Token` for the token):
+Actual event shape, built by the ASL's `NotifyTelegram` state (see
+`infra/step_functions/job_scan_orchestrator.asl.json`), using `$$.Task.Token`
+for the token:
 
     {
         "task_token": "<$$.Task.Token>",
-        "job_id": "amazon#12345",
-        "telegram_chat_id": 123456789,
-        "brief_text": "...",
-        "draft_text": "..."
+        "job": {...JobPosting dict, incl. "job_key"...},
+        "research": {"brief_text": "...", "tone_guidance": "...", ...},
+        "project_match": {"matches": [...]},
+        "draft": {"draft_text": "...", ...},
+        "edit_count": 0
     }
+
+Single-user tool: the chat to notify is `config.TELEGRAM_CHAT_ID`, not
+something passed per-job - the ASL has no per-job chat id to give us.
 
 Sends the brief + draft with an Approve/Deny/Edit inline keyboard, persists
 the task token into PendingApprovals, and returns immediately - the human
@@ -23,17 +28,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.telegram import store, telegram_api
+from telegram import config, store, telegram_api
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    job_id = event["job_id"]
+    job_id = event["job"]["job_key"]
     task_token = event["task_token"]
-    chat_id = event["telegram_chat_id"]
-    brief_text = event["brief_text"]
-    draft_text = event["draft_text"]
+    chat_id = config.TELEGRAM_CHAT_ID
+    brief_text = event.get("research", {}).get("brief_text", "")
+    draft_text = event.get("draft", {}).get("draft_text", "")
 
-    message_text = f"{brief_text}\n\n{draft_text}"
+    edit_count = event.get("edit_count", 0)
+    prefix = f"✏️ Revision {edit_count}\n\n" if edit_count else ""
+    message_text = f"{prefix}{brief_text}\n\n{draft_text}"
+
     sent = telegram_api.send_message(
         chat_id, message_text, reply_markup=telegram_api.approval_keyboard(job_id)
     )

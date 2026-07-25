@@ -1,0 +1,6 @@
+# Runtime dependencies for the zip-packaged (non-Playwright) Lambdas in this
+# directory - bundled by infra/stacks/lambda_stack.py's PythonFunction
+# constructs. boto3/botocore are deliberately omitted: the Lambda Python
+# runtime already provides them, bundling our own only bloats the package.
+httpx~=0.27
+numpy~=1.26
