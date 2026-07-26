@@ -32,9 +32,22 @@
                   "BackoffRate": 2.0
                 }
               ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "AmazonAdapterFailed"
+                }
+              ],
               "ResultSelector": {
                 "postings.$": "$.Payload.postings"
               },
+              "End": true
+            },
+            "AmazonAdapterFailed": {
+              "Type": "Pass",
+              "Comment": "One source failing shouldn't sink the whole scan - degrade to zero postings from this source rather than failing ScanSources entirely.",
+              "Parameters": { "postings": [] },
               "End": true
             }
           }
@@ -66,9 +79,22 @@
                   "BackoffRate": 2.0
                 }
               ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "GoogleAdapterFailed"
+                }
+              ],
               "ResultSelector": {
                 "postings.$": "$.Payload.postings"
               },
+              "End": true
+            },
+            "GoogleAdapterFailed": {
+              "Type": "Pass",
+              "Comment": "See AmazonAdapterFailed.",
+              "Parameters": { "postings": [] },
               "End": true
             }
           }
@@ -100,9 +126,22 @@
                   "BackoffRate": 2.0
                 }
               ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "WellfoundAdapterFailed"
+                }
+              ],
               "ResultSelector": {
                 "postings.$": "$.Payload.postings"
               },
+              "End": true
+            },
+            "WellfoundAdapterFailed": {
+              "Type": "Pass",
+              "Comment": "See AmazonAdapterFailed. Also the expected path today - WellfoundAdapter requires an authenticated storage_state that nothing currently supplies (see wellfound.py's module docstring); this keeps that a soft zero-results degradation instead of failing every scan.",
+              "Parameters": { "postings": [] },
               "End": true
             }
           }
