@@ -41,6 +41,22 @@ SRC_DIR = str(REPO_ROOT / "src")
 RUNTIME = lambda_.Runtime.PYTHON_3_12
 SECRET_PREFIX = "unemployedbumbuddy"
 
+# The Docker build context is the whole repo (Dockerfile.* COPY paths are
+# repo-relative), so these must be excluded or CDK's asset-staging copy
+# recurses into its own `cdk.out` output - infinite nesting until the OS
+# filename-length limit kills the build - and needlessly ships gigabytes of
+# `.venv` into the build context on top of that.
+DOCKER_BUILD_EXCLUDES = [
+    "infra/cdk.out",
+    "infra/cdk.out/**",
+    ".venv",
+    ".venv/**",
+    ".git",
+    ".git/**",
+    "**/__pycache__",
+    "**/*.pyc",
+]
+
 
 class LambdaStack(Stack):
     def __init__(
@@ -242,7 +258,9 @@ class LambdaStack(Stack):
             self,
             name,
             function_name=name,
-            code=lambda_.DockerImageCode.from_image_asset(str(REPO_ROOT), file=dockerfile_relpath),
+            code=lambda_.DockerImageCode.from_image_asset(
+                str(REPO_ROOT), file=dockerfile_relpath, exclude=DOCKER_BUILD_EXCLUDES
+            ),
             role=self._roles[role_name],
             timeout=Duration.seconds(timeout),
             memory_size=memory,
