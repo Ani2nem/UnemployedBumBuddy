@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -222,6 +222,6 @@ def _parse_epoch_millis(value: int | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromtimestamp(value / 1000, tz=UTC)
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
     except (OverflowError, OSError, ValueError):
         return None

@@ -110,7 +110,12 @@ class WellfoundAdapter:
         postings: dict[str, JobPosting] = {}
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            # See adapters/_browser.py's launch_browser_context for why these
+            # args are required in Lambda's execution environment specifically.
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-gpu", "--single-process"],
+            )
             try:
                 context = browser.new_context(storage_state=self._storage_state)
                 context.route("**/*", _block_heavy_resources)

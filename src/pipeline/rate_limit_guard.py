@@ -21,7 +21,7 @@ should block a fresh deploy before you've hand-seeded any policy data.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pipeline.dynamo import Key, get_table
@@ -63,7 +63,7 @@ def _count_recent(scope_key: str, window_hours: float, *, now: datetime) -> int:
 
 
 def check_rate_limit(job: JobPosting, *, now: datetime | None = None) -> Decision:
-    now = now or datetime.now(UTC)
+    now = now or datetime.now(timezone.utc)
 
     platform_policy = _get_policy(f"platform:{job.source}")
     if platform_policy is not None:

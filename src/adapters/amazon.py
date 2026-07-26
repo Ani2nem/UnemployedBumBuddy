@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -161,7 +161,7 @@ def _parse_posted_date(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.strptime(value, "%B %d, %Y").replace(tzinfo=UTC)
+        return datetime.strptime(value, "%B %d, %Y").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 

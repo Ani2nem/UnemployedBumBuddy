@@ -7,7 +7,7 @@ the same posting is new - only the put that actually inserts the row wins.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -25,7 +25,7 @@ def try_claim_new(posting: JobPosting, *, now: datetime | None = None) -> bool:
     pipeline). Returns False if the job_key already exists - another scan
     claimed it first, or it was already processed in a prior cycle.
     """
-    ts = (now or datetime.now(UTC)).isoformat()
+    ts = (now or datetime.now(timezone.utc)).isoformat()
     try:
         get_table(SEEN_JOBS_TABLE).put_item(
             Item={
@@ -78,7 +78,7 @@ def update_status(job_key: str, status: str, **extra_attrs: object) -> None:
     if status not in SEEN_JOBS_STATUS_VALUES:
         raise ValueError(f"Unknown SeenJobs status: {status!r}")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     set_clauses = ["#status = :status", "last_seen_at = :now"]
     expr_attr_names = {"#status": "status"}
     expr_attr_values: dict[str, object] = {":status": status, ":now": now}

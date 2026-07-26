@@ -2,17 +2,33 @@
 # Dockerfile.wellfound - google.py is Playwright-only (no confirmed public
 # JSON API), and Chromium is too large for a zip deployment/layer.
 #
+# See Dockerfile.wellfound's comment for why this bases on Microsoft's
+# Playwright image rather than public.ecr.aws/lambda/python (Amazon Linux
+# breaks `playwright install --with-deps`, confirmed by an actual failed
+# deploy) and why `playwright` is pip-installed separately, pinned to the
+# exact image tag version, even though Chromium itself is already present.
+#
 #   docker build -f src/adapters/Dockerfile.google -t google-adapter .
 #
 # Memory/timeout set at the Lambda function level in infra/, not here.
 
-FROM public.ecr.aws/lambda/python:3.12
+ARG LAMBDA_TASK_ROOT="/var/task"
 
-RUN pip install --no-cache-dir playwright~=1.45 httpx~=0.27 \
-    && python -m playwright install --with-deps chromium \
-    && python -m playwright install-deps chromium
+FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy AS build-image
+ARG LAMBDA_TASK_ROOT
+RUN mkdir -p ${LAMBDA_TASK_ROOT}
+WORKDIR ${LAMBDA_TASK_ROOT}
+RUN apt-get update && apt-get install -y --no-install-recommends g++ make cmake unzip libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --target ${LAMBDA_TASK_ROOT} awslambdaric httpx~=0.27 playwright==1.45.0
+
+FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+ARG LAMBDA_TASK_ROOT
+WORKDIR ${LAMBDA_TASK_ROOT}
+COPY --from=build-image ${LAMBDA_TASK_ROOT} ${LAMBDA_TASK_ROOT}
 
 COPY src/adapters ${LAMBDA_TASK_ROOT}/adapters
 COPY src/shared ${LAMBDA_TASK_ROOT}/shared
 
+ENTRYPOINT ["/usr/bin/python3", "-m", "awslambdaric"]
 CMD ["adapters.google.lambda_handler"]

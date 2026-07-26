@@ -10,7 +10,7 @@ window counts - this is the only place those rows get written, since
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pipeline import dedup, rate_limit_guard
@@ -23,7 +23,7 @@ _EXTRA_ATTR_KEYS = ("reason", "error", "submission")
 
 
 def record_application_event(job: JobPosting, *, now: datetime | None = None) -> None:
-    now = now or datetime.now(UTC)
+    now = now or datetime.now(timezone.utc)
     applied_at_iso = now.isoformat()
     table = get_table(APPLICATION_EVENTS_TABLE)
     base_item = {

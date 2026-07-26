@@ -3,20 +3,40 @@
 # page loads per invocation - see adapters/_browser.py and wellfound.py's module
 # docstring for why (DataDome-gated job pages, authenticated storage_state required).
 #
-# Build/deploy is the infra workstream's call (CDK repository/image asset wiring),
-# this Dockerfile just captures the packaging this adapter needs:
+# Base image is Microsoft's official Playwright image (Ubuntu Jammy), NOT
+# public.ecr.aws/lambda/python - that Amazon-Linux-based image doesn't work here:
+# `playwright install --with-deps` only knows how to install system dependencies via
+# apt-get, which doesn't exist on Amazon Linux (confirmed by an actual failed deploy,
+# not a hunch). Microsoft's image ships Chromium + every system dependency it needs
+# already correctly installed for Ubuntu (browsers live at $PLAYWRIGHT_BROWSERS_PATH),
+# but *not* the `playwright` Python package itself - that's pip-installed below,
+# pinned to the exact version in the image tag, since Playwright's Python bindings
+# and its browser build are version-coupled (a mismatch fails at launch, not import
+# time). This Dockerfile also bolts on the AWS Lambda Runtime Interface Client
+# (awslambdaric) to make the image Lambda-compatible.
+#
 #   docker build -f src/adapters/Dockerfile.wellfound -t wellfound-adapter .
 #
 # Memory: 1536-2048 MB. Timeout: 90-120s. Both set at the Lambda function level in
 # infra/, not here.
 
-FROM public.ecr.aws/lambda/python:3.12
+ARG LAMBDA_TASK_ROOT="/var/task"
 
-RUN pip install --no-cache-dir playwright~=1.45 httpx~=0.27 \
-    && python -m playwright install --with-deps chromium \
-    && python -m playwright install-deps chromium
+FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy AS build-image
+ARG LAMBDA_TASK_ROOT
+RUN mkdir -p ${LAMBDA_TASK_ROOT}
+WORKDIR ${LAMBDA_TASK_ROOT}
+RUN apt-get update && apt-get install -y --no-install-recommends g++ make cmake unzip libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --target ${LAMBDA_TASK_ROOT} awslambdaric httpx~=0.27 playwright==1.45.0
+
+FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+ARG LAMBDA_TASK_ROOT
+WORKDIR ${LAMBDA_TASK_ROOT}
+COPY --from=build-image ${LAMBDA_TASK_ROOT} ${LAMBDA_TASK_ROOT}
 
 COPY src/adapters ${LAMBDA_TASK_ROOT}/adapters
 COPY src/shared ${LAMBDA_TASK_ROOT}/shared
 
+ENTRYPOINT ["/usr/bin/python3", "-m", "awslambdaric"]
 CMD ["adapters.wellfound.lambda_handler"]

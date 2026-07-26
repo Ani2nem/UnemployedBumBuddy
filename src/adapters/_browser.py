@@ -38,7 +38,15 @@ def launch_browser_context(user_agent: str = DEFAULT_USER_AGENT) -> Iterator[Bro
     a fresh browser per job.
     """
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        # Lambda's execution environment can't set up Chromium's usual sandbox
+        # (no unprivileged user namespaces) and has no GPU - --no-sandbox and
+        # --disable-gpu are required for Chromium to launch at all there;
+        # --single-process avoids assumptions about /dev/shm and multi-process
+        # IPC that don't hold up in that environment either.
+        browser = playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-gpu", "--single-process"],
+        )
         try:
             context = browser.new_context(user_agent=user_agent)
             context.route("**/*", _block_heavy_resources)
