@@ -27,6 +27,7 @@ from typing import Any
 
 from aws_cdk import CfnOutput, CfnParameter, Duration, Stack
 from aws_cdk import aws_apigatewayv2 as apigwv2
+from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_event_sources as lambda_event_sources
@@ -259,8 +260,19 @@ class LambdaStack(Stack):
             name,
             function_name=name,
             code=lambda_.DockerImageCode.from_image_asset(
-                str(REPO_ROOT), file=dockerfile_relpath, exclude=DOCKER_BUILD_EXCLUDES
+                str(REPO_ROOT),
+                file=dockerfile_relpath,
+                exclude=DOCKER_BUILD_EXCLUDES,
+                # Pinned explicitly, not left to whatever `docker build` defaults
+                # to on the machine running `cdk deploy` - building on Apple
+                # Silicon without this produced an ARM64 image running on a
+                # Lambda function that defaulted to x86_64, which fails with
+                # "exec format error" at invoke time, not build/deploy time
+                # (confirmed by an actual failed execution). Must match the
+                # `architecture=` below exactly.
+                platform=ecr_assets.Platform.LINUX_ARM64,
             ),
+            architecture=lambda_.Architecture.ARM_64,
             role=self._roles[role_name],
             timeout=Duration.seconds(timeout),
             memory_size=memory,
