@@ -40,7 +40,7 @@ from pathlib import Path
 
 from pipeline.config import LCA_LOOKBACK_YEARS
 from pipeline.dynamo import get_table
-from pipeline.employer_normalize import normalize_employer_name
+from pipeline.employer_normalize import known_employer_aliases, normalize_employer_name
 from shared.tables import SPONSOR_HISTORY_TABLE
 
 # DOL has renamed several of these columns across fiscal-year vintages of the
@@ -184,13 +184,39 @@ def load_sponsor_history(records: Iterable[dict]) -> int:
     return count
 
 
-def run_etl(input_path: Path, *, lookback_years: int = LCA_LOOKBACK_YEARS, as_of: date | None = None) -> int:
+def resolve_employer_filter(brands: list[str]) -> set[str]:
+    """Expand `--employers` brand names (e.g. "amazon") into the full set of
+    normalized filer-name variants from `employer_normalize.py`'s curated
+    alias table, per docs/ARCHITECTURE.md - this only needs to cover
+    companies actively targeted by the job search, not the whole dataset.
+    National LCA disclosure files run into the hundreds of thousands of
+    rows; `SponsorHistory` is provisioned at 1 WCU (to fit AWS's Always-Free
+    tier - see infra/stacks/data_stack.py), so loading the unfiltered file
+    would take an unreasonable amount of time. Scoping to known target
+    employers up front is the fix, not a workaround.
+    """
+    allowed: set[str] = set()
+    for brand in brands:
+        normalized_brand = normalize_employer_name(brand)
+        allowed.add(normalized_brand)
+        allowed.update(known_employer_aliases(normalized_brand))
+    return allowed
+
+
+def run_etl(
+    input_path: Path,
+    *,
+    lookback_years: int = LCA_LOOKBACK_YEARS,
+    as_of: date | None = None,
+    employer_filter: set[str] | None = None,
+) -> int:
     as_of = as_of or date.today()
     cutoff = as_of.replace(year=as_of.year - lookback_years)
     records = (
         record
         for row in iter_rows(input_path)
         if (record := row_to_sponsor_record(row, cutoff=cutoff)) is not None
+        and (employer_filter is None or record["employer_normalized"] in employer_filter)
     )
     return load_sponsor_history(records)
 
@@ -199,9 +225,21 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", required=True, type=Path, help="Local DOL LCA disclosure CSV/XLSX file")
     parser.add_argument("--lookback-years", type=int, default=LCA_LOOKBACK_YEARS)
+    parser.add_argument(
+        "--employers",
+        nargs="+",
+        default=None,
+        help=(
+            "Restrict load to these brands' known filer-name aliases (e.g. "
+            "--employers amazon google). Omit to load every employer in the "
+            "file - not recommended given SponsorHistory's 1-WCU provisioned "
+            "capacity; see resolve_employer_filter's docstring."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    count = run_etl(args.input, lookback_years=args.lookback_years)
+    employer_filter = resolve_employer_filter(args.employers) if args.employers else None
+    count = run_etl(args.input, lookback_years=args.lookback_years, employer_filter=employer_filter)
     print(f"Loaded {count} SponsorHistory records from {args.input}")
 
 
