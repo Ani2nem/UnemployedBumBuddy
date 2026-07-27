@@ -237,7 +237,12 @@ class IamStack(Stack):
 
     def _table_statement(self, table_name: str, *, write: bool) -> iam.PolicyStatement:
         table = self._tables[table_name]
-        actions = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:BatchGetItem"]
+        # dynamodb:Scan is a deliberate base-read action, not an oversight:
+        # project_match.py and draft.py both do a full-table Scan by design
+        # (small, slow-growing corpus - see their own docstrings for why
+        # that's preferred over a GSI/vector DB), and the missing grant only
+        # surfaced as a live AccessDeniedException, not at synth/deploy time.
+        actions = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:BatchGetItem", "dynamodb:Scan"]
         if write:
             actions += [
                 "dynamodb:PutItem",

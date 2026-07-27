@@ -72,8 +72,12 @@ def update_status(job_key: str, status: str, **extra_attrs: object) -> None:
     """Move a `SeenJobs` row to a new status, bumping `last_seen_at`.
 
     `extra_attrs` are set alongside the status update (e.g. a filter stage
-    recording its `reason`) - attribute names are used verbatim as DynamoDB
-    update-expression paths, so callers must pass safe, non-reserved names.
+    recording its `reason`). Every dynamic name is aliased via
+    ExpressionAttributeNames rather than written verbatim into the update
+    expression - confirmed necessary, not just defensive: `update_job_status.py`
+    passes `error` as a key on failure paths, and "error" is itself a
+    DynamoDB reserved word, which raised a real ValidationException in
+    production the first time a candidate actually failed mid-pipeline.
     """
     if status not in SEEN_JOBS_STATUS_VALUES:
         raise ValueError(f"Unknown SeenJobs status: {status!r}")
@@ -84,9 +88,11 @@ def update_status(job_key: str, status: str, **extra_attrs: object) -> None:
     expr_attr_values: dict[str, object] = {":status": status, ":now": now}
 
     for key, value in extra_attrs.items():
-        placeholder = f":{key}"
-        set_clauses.append(f"{key} = {placeholder}")
-        expr_attr_values[placeholder] = value
+        name_placeholder = f"#{key}"
+        value_placeholder = f":{key}"
+        set_clauses.append(f"{name_placeholder} = {value_placeholder}")
+        expr_attr_names[name_placeholder] = key
+        expr_attr_values[value_placeholder] = value
 
     get_table(SEEN_JOBS_TABLE).update_item(
         Key={"job_key": job_key},
