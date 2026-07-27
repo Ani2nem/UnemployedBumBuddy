@@ -40,7 +40,7 @@ from pathlib import Path
 
 from pipeline.config import LCA_LOOKBACK_YEARS
 from pipeline.dynamo import get_table
-from pipeline.employer_normalize import known_employer_aliases, normalize_employer_name
+from pipeline.employer_normalize import normalize_employer_name
 from shared.tables import SPONSOR_HISTORY_TABLE
 
 # DOL has renamed several of these columns across fiscal-year vintages of the
@@ -80,6 +80,15 @@ def _get_col(row: dict[str, str], field: str) -> str | None:
     for alias in COLUMN_ALIASES[field]:
         value = row.get(alias)
         if value not in (None, ""):
+            # openpyxl (the .xlsx path) hands back real datetime/date objects
+            # for date-formatted cells, not strings - str()'ing one directly
+            # produces "2026-03-31 00:00:00", which matches none of
+            # _DATE_FORMATS (all date-only) and made every row silently fail
+            # date parsing (confirmed: zero records loaded from a real file
+            # that definitely had matching rows). Format explicitly instead
+            # of guessing string representations.
+            if isinstance(value, (datetime, date)):
+                return value.strftime("%Y-%m-%d")
             return str(value)
     return None
 
@@ -185,22 +194,25 @@ def load_sponsor_history(records: Iterable[dict]) -> int:
 
 
 def resolve_employer_filter(brands: list[str]) -> set[str]:
-    """Expand `--employers` brand names (e.g. "amazon") into the full set of
-    normalized filer-name variants from `employer_normalize.py`'s curated
-    alias table, per docs/ARCHITECTURE.md - this only needs to cover
+    """Normalize `--employers` brand names (e.g. "amazon") for a *substring*
+    match against each row's normalized employer name at load time (see
+    `run_etl`), per docs/ARCHITECTURE.md - this only needs to cover
     companies actively targeted by the job search, not the whole dataset.
     National LCA disclosure files run into the hundreds of thousands of
     rows; `SponsorHistory` is provisioned at 1 WCU (to fit AWS's Always-Free
     tier - see infra/stacks/data_stack.py), so loading the unfiltered file
-    would take an unreasonable amount of time. Scoping to known target
-    employers up front is the fix, not a workaround.
+    would take an unreasonable amount of time.
+
+    Deliberately *not* `employer_normalize.py`'s curated alias table here -
+    that table is exact-match, built for query-time lookups, and confirmed
+    (against a real DOL file) too narrow for load-time scoping: a real row
+    normalized to "amazon development center u s" doesn't exactly match any
+    curated "amazon" alias, but does contain "amazon". Being a bit
+    over-inclusive at load time is harmless (a handful of extra rows); being
+    too strict silently drops real subsidiary filings before they ever reach
+    the table.
     """
-    allowed: set[str] = set()
-    for brand in brands:
-        normalized_brand = normalize_employer_name(brand)
-        allowed.add(normalized_brand)
-        allowed.update(known_employer_aliases(normalized_brand))
-    return allowed
+    return {normalize_employer_name(brand) for brand in brands}
 
 
 def run_etl(
@@ -216,7 +228,10 @@ def run_etl(
         record
         for row in iter_rows(input_path)
         if (record := row_to_sponsor_record(row, cutoff=cutoff)) is not None
-        and (employer_filter is None or record["employer_normalized"] in employer_filter)
+        and (
+            employer_filter is None
+            or any(brand in record["employer_normalized"] for brand in employer_filter)
+        )
     )
     return load_sponsor_history(records)
 
@@ -230,10 +245,12 @@ def main(argv: list[str] | None = None) -> None:
         nargs="+",
         default=None,
         help=(
-            "Restrict load to these brands' known filer-name aliases (e.g. "
-            "--employers amazon google). Omit to load every employer in the "
-            "file - not recommended given SponsorHistory's 1-WCU provisioned "
-            "capacity; see resolve_employer_filter's docstring."
+            "Restrict load to rows whose normalized employer name contains "
+            "one of these brand names (e.g. --employers amazon google - "
+            "matches subsidiary filer names too, e.g. 'amazon web services'). "
+            "Omit to load every employer in the file - not recommended given "
+            "SponsorHistory's 1-WCU provisioned capacity; see "
+            "resolve_employer_filter's docstring."
         ),
     )
     args = parser.parse_args(argv)
