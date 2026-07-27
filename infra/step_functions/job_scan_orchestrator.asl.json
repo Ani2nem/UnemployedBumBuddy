@@ -281,7 +281,41 @@
             ],
             "ResultSelector": { "payload.$": "$.Payload" },
             "ResultPath": "$.research",
-            "Next": "MatchProject"
+            "Next": "IsDirectApplySource"
+          },
+          "IsDirectApplySource": {
+            "Type": "Choice",
+            "Comment": "Amazon/Google are standard company career-portal applications - fill a form, upload a resume, no person to send a crafted outreach message to. Skip the Bedrock draft call and review friction entirely for these; full research+draft+approval stays for genuine outreach (e.g. Wellfound resolving to an individual contact). Source is a deliberate simplification, not a proxy for ats_platform - see job_scan_orchestrator.asl.json's git history for why.",
+            "Choices": [
+              {
+                "Or": [
+                  { "Variable": "$.job.source", "StringEquals": "amazon" },
+                  { "Variable": "$.job.source", "StringEquals": "google" }
+                ],
+                "Next": "DirectApplySkipMatch"
+              }
+            ],
+            "Default": "MatchProject"
+          },
+          "DirectApplySkipMatch": {
+            "Type": "Pass",
+            "Comment": "Stand-in for MatchProject's output shape - no project match is meaningful without a draft to reference it in.",
+            "Parameters": { "payload": { "matches": [] } },
+            "ResultPath": "$.project_match",
+            "Next": "DirectApplySkipDraft"
+          },
+          "DirectApplySkipDraft": {
+            "Type": "Pass",
+            "Comment": "Stand-in for GenerateDraft's output shape, so RateLimitGuard/NotifyTelegram/ApprovalDecision/SubmitApplication all stay unchanged. Tapping Edit on this notification still works as an on-demand escape hatch - ReviseDraft calls the real GenerateDraft with this as previous_draft.",
+            "Parameters": {
+              "payload": {
+                "draft_text.$": "States.Format('This is a direct application through the {} careers portal - no outreach message needed. Apply here: {}', $.job.company, $.job.url)",
+                "projects_referenced": [],
+                "confidence_notes": "Direct-apply source - drafting skipped by design. Approve just to note you're applying, Deny to pass, or Edit if you want a generated draft/cover-letter paragraph after all."
+              }
+            },
+            "ResultPath": "$.draft",
+            "Next": "RateLimitGuard"
           },
           "MatchProject": {
             "Type": "Task",
