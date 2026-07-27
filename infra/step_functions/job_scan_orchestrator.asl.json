@@ -449,7 +449,7 @@
                 "Next": "RecordJobFailed"
               }
             ],
-            "ResultSelector": { "payload.$": "$.Payload" },
+            "ResultSelector": { "payload.$": "$" },
             "ResultPath": "$.approval",
             "Next": "ApprovalDecision"
           },
