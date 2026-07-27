@@ -17,6 +17,7 @@ from typing import Any
 from pipeline import embeddings, llm
 from pipeline.dynamo import get_table
 from pipeline.models import DraftResult, ProjectMatch, StyleExample
+from pipeline.profile import load_candidate_profile
 from shared.contracts import JobPosting
 from shared.serialize import job_posting_from_dict
 from shared.tables import PROJECTS_TABLE, STYLE_EXAMPLES_TABLE
@@ -126,17 +127,26 @@ def fetch_project_details(project_ids: list[str]) -> list[dict]:
 
 _DRAFT_SYSTEM_PROMPT = (
     "You are drafting a job application/outreach message in the candidate's own "
-    "voice, based on style examples of their past writing. Respond with ONLY a "
-    'JSON object of the form {"draft_text": "...", "projects_referenced": '
-    '["project_id", ...], "confidence_notes": "..."}. '
+    "voice, based on style examples of their past writing and a factual summary of "
+    "their actual background. Respond with ONLY a JSON object of the form "
+    '{"draft_text": "...", "projects_referenced": ["project_id", ...], '
+    '"confidence_notes": "..."}. '
     "draft_text: the full application/outreach message, written to sound like the "
     "candidate - match the style examples' phrasing, structure, and tone - tailored "
     "to the job description, adjusted for the given company tone guidance, and "
     "naturally referencing the given project(s), not just listing them. "
+    "CRITICAL: only state experience, skills, or years the candidate's background "
+    "summary actually supports. The job description's requirements are context for "
+    "what to emphasize, not a source of facts about the candidate - never restate a "
+    "JD's 'minimum qualifications' (years of experience, specific past technologies) "
+    "as if they were the candidate's own history. If the candidate's real background "
+    "is a stretch for this posting, write an honest, confident draft about what they "
+    "actually bring - don't invent experience to close the gap. "
     "projects_referenced: which of the given project ids were actually mentioned in "
     "draft_text. "
     "confidence_notes: one sentence flagging anything uncertain (e.g. weak project "
-    "fit, missing info) the human reviewer should know before approving."
+    "fit, missing info, or a real gap between the candidate's background and this "
+    "posting's level/requirements) the human reviewer should know before approving."
 )
 
 
@@ -145,6 +155,7 @@ def _build_draft_user_prompt(
     projects: list[dict],
     tone_guidance: str,
     style_examples: list[StyleExample],
+    background_summary: str,
     *,
     previous_draft: str | None = None,
     edit_feedback: str | None = None,
@@ -167,6 +178,9 @@ def _build_draft_user_prompt(
         else ""
     )
     return (
+        f"Candidate's actual background (the only source of truth for what they've "
+        f"done - do not attribute anything beyond this to them):\n"
+        f"{background_summary or '(no background summary on file)'}\n\n"
         f"Job title: {posting.title}\n"
         f"Company: {posting.company}\n"
         f"Job description:\n{posting.description_text[:4000]}\n\n"
@@ -182,6 +196,7 @@ def draft_application(
     project_matches: list[ProjectMatch],
     tone_guidance: str,
     *,
+    background_summary: str = "",
     scenario_tag: str | None = None,
     project_details: list[dict] | None = None,
     style_examples: list[StyleExample] | None = None,
@@ -193,6 +208,11 @@ def draft_application(
     """`previous_draft`/`edit_feedback` are set only on a revision (the ASL's
     `ReviseDraft` state calls this same function after a Telegram "Edit" tap) -
     the initial draft leaves both `None`.
+
+    `background_summary` (from `CandidateProfile`) is the model's only source
+    of truth about the candidate's actual experience - see the module
+    docstring history: without it, a real draft fabricated years of
+    experience and skills by mirroring the JD's own requirements back.
     """
     projects = (
         project_details
@@ -212,6 +232,7 @@ def draft_application(
             projects,
             tone_guidance,
             examples,
+            background_summary,
             previous_draft=previous_draft,
             edit_feedback=edit_feedback,
         ),
@@ -239,11 +260,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         for m in (event.get("project_match") or {}).get("matches", [])
     ]
     previous_draft = event.get("previous_draft") or {}
+    profile = load_candidate_profile()
 
     result = draft_application(
         job,
         project_matches,
         research.get("tone_guidance", ""),
+        background_summary=profile.background_summary,
         previous_draft=previous_draft.get("draft_text"),
         edit_feedback=event.get("edit_feedback"),
     )

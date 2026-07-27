@@ -32,4 +32,5 @@ def load_candidate_profile(profile_id: str = DEFAULT_PROFILE_ID) -> CandidatePro
         profile_id=profile_id,
         current_level=ExperienceLevel[item["current_level"]],
         target_country_codes=target_country_codes,
+        background_summary=item.get("background_summary", ""),
     )

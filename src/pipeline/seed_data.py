@@ -8,7 +8,8 @@ time (see `project_match.ingest_project_embedding` /
 and a deployed Bedrock-reachable account, not just DynamoDB access.
 
 Usage:
-    python -m pipeline.seed_data profile --level SENIOR --countries US
+    python -m pipeline.seed_data profile --level SENIOR --countries US \\
+        --background-file ./background-summary.txt
 
     python -m pipeline.seed_data project --id my-project \\
         --title "Thing I built" --url https://github.com/... \\
@@ -43,14 +44,19 @@ def _read_text(inline: str | None, file_path: str | None, *, field_name: str) ->
 
 def seed_profile(args: argparse.Namespace) -> None:
     level = ExperienceLevel[args.level.upper()]
+    background_summary = _read_text(args.background, args.background_file, field_name="background")
     get_table(APPLICANT_PROFILE_TABLE).put_item(
         Item={
             "profile_id": args.profile_id,
             "current_level": level.name,
             "target_country_codes": list(args.countries),
+            "background_summary": background_summary,
         }
     )
-    print(f"ApplicantProfile[{args.profile_id!r}] = level {level.name}, countries {args.countries}")
+    print(
+        f"ApplicantProfile[{args.profile_id!r}] = level {level.name}, countries {args.countries}, "
+        f"background {len(background_summary)} chars"
+    )
 
 
 def seed_project(args: argparse.Namespace) -> None:
@@ -96,6 +102,16 @@ def main(argv: list[str] | None = None) -> None:
         "--level", required=True, choices=[l.name for l in ExperienceLevel], help="Current level"
     )
     p_profile.add_argument("--countries", nargs="+", default=["US"], help="ISO alpha-2 country codes")
+    p_profile.add_argument(
+        "--background",
+        help=(
+            "Factual summary of actual experience/skills - the only source of truth "
+            "draft.py has for the candidate's real background. Without this, drafts "
+            "have nothing to ground claims in and will fabricate experience by "
+            "mirroring the job description's own requirements back (confirmed live)."
+        ),
+    )
+    p_profile.add_argument("--background-file")
     p_profile.set_defaults(func=seed_profile)
 
     p_project = sub.add_parser("project", help="Add/update a Projects entry")

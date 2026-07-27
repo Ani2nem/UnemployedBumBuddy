@@ -32,11 +32,20 @@ class ExperienceLevel(IntEnum):
 
 @dataclass
 class CandidateProfile:
-    """The slice of `ApplicantProfile` the pipeline filters against."""
+    """The slice of `ApplicantProfile` the pipeline filters against and drafts from.
+
+    `background_summary` is a real, factual summary of the candidate's actual
+    experience (roles, years, skills) - it exists specifically so
+    `draft.py` has real facts to ground a draft in, instead of only seeing
+    the JD's own requirements and having nothing else to draw from (which,
+    confirmed against a real draft, made the model just mirror the JD's
+    "minimum qualifications" back as if they were the candidate's).
+    """
 
     profile_id: str
     current_level: ExperienceLevel
     target_country_codes: tuple[str, ...] = ("US",)
+    background_summary: str = ""
 
 
 @dataclass
