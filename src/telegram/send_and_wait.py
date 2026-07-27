@@ -36,11 +36,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     task_token = event["task_token"]
     chat_id = config.TELEGRAM_CHAT_ID
     brief_text = event.get("research", {}).get("brief_text", "")
-    draft_text = event.get("draft", {}).get("draft_text", "")
+    draft = event.get("draft", {})
+    draft_text = draft.get("draft_text", "")
+    confidence_notes = draft.get("confidence_notes", "")
 
     edit_count = event.get("edit_count", 0)
     prefix = f"✏️ Revision {edit_count}\n\n" if edit_count else ""
-    message_text = f"{prefix}{brief_text}\n\n{draft_text}"
+    # confidence_notes exists specifically to inform the approve/deny call
+    # (see draft.py's system prompt) - dropping it here would silently
+    # discard the one piece of the draft aimed at the human reviewer rather
+    # than at the recipient of the message itself.
+    confidence_block = f"\n\n⚠️ {confidence_notes}" if confidence_notes else ""
+    message_text = f"{prefix}{brief_text}\n\n{draft_text}{confidence_block}"
 
     sent = telegram_api.send_message(
         chat_id, message_text, reply_markup=telegram_api.approval_keyboard(job_id)
