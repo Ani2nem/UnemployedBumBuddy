@@ -62,13 +62,14 @@ class IamStack(Stack):
 
         # --- Adapters: no DynamoDB, no Bedrock. Just enough S3 to persist
         # the raw JD text they scraped, scoped to their own source prefix.
+        # Wellfound additionally needs its captured session (see
+        # scripts/capture_wellfound_session.py) - Amazon/Google don't
+        # authenticate at all, so they get nothing extra.
         for source in ("amazon", "google", "wellfound"):
-            self._make_role(
-                f"{source.capitalize()}AdapterRole",
-                statements=[
-                    self._s3_write_statement(f"jobs/{source}/*"),
-                ],
-            )
+            statements = [self._s3_write_statement(f"jobs/{source}/*")]
+            if source == "wellfound":
+                statements.append(self._secret_read_statement("wellfound-storage-state"))
+            self._make_role(f"{source.capitalize()}AdapterRole", statements=statements)
 
         # --- Dedup: read/write SeenJobs only.
         self._make_role(

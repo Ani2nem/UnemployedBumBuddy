@@ -34,19 +34,26 @@ that canonical source over whatever text Wellfound's own page renders.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin
 
+import boto3
 import httpx
 from playwright.sync_api import Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from adapters.ats_redirect import enrich_via_ats
 from shared.contracts import JobPosting
+
+_STORAGE_STATE_SECRET_NAME = os.environ.get(
+    "WELLFOUND_STORAGE_STATE_SECRET_NAME", "unemployedbumbuddy/wellfound-storage-state"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,13 +267,34 @@ def _block_heavy_resources(route: Route) -> None:
         route.continue_()
 
 
+@functools.lru_cache(maxsize=1)
+def _secrets_client():
+    return boto3.client("secretsmanager")
+
+
+def _load_storage_state_from_secrets_manager() -> dict[str, Any] | None:
+    """Best-effort load - a missing secret returns None rather than raising,
+    so the adapter's own "no storage_state" RuntimeError (see
+    `fetch_new_postings`) stays the one clear failure signal for "auth isn't
+    set up yet" instead of a Secrets Manager exception leaking through.
+    """
+    try:
+        response = _secrets_client().get_secret_value(SecretId=_STORAGE_STATE_SECRET_NAME)
+    except _secrets_client().exceptions.ResourceNotFoundException:
+        return None
+    return json.loads(response["SecretString"])
+
+
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     from shared.serialize import job_posting_to_dict
 
     since_raw = event.get("since")
     since = datetime.fromisoformat(since_raw) if since_raw else None
     filters = event.get("filters") or {}
-    storage_state = event.get("storage_state")
+    # Event-supplied storage_state wins (useful for testing); production
+    # relies on Secrets Manager, since the ASL has no per-invocation way to
+    # hand this Lambda a live session credential.
+    storage_state = event.get("storage_state") or _load_storage_state_from_secrets_manager()
 
     adapter = WellfoundAdapter(storage_state=storage_state)
     postings = adapter.fetch_new_postings(since, filters)
